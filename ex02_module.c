@@ -1,162 +1,167 @@
-/*
- *	This is an example character linux module
- * 	This module does data operations in streams
- * 	This module is also does data operations in sync
- */
-
-//
-// Required headers for module, data operations, data types, and user space communication
-#include <linux/stat.h>
-#include <linux/kernel.h>
-#include <linux/init.h>
-#include <linux/module.h>
 #include <linux/fs.h>
+#include <linux/kernel.h>
+#include <linux/proc_fs.h>
+#include <linux/module.h>
+#include <linux/uaccess.h>
+#include <linux/init.h>
+#include <linux/stat.h>
+#include <linux/slab.h>
 #include <asm/uaccess.h>
 
-// Defining some info used for init
-#define __MODULE_NAME "CHARACTER_DEVICE_MODULE"
-#define __MODULE_DESCRIPTION "Example character device module"
-#define __MODULE_LISCENSE "GPL"
-#define __MODULE_AUTHOR "Matthew Todd Geiger <matthewgeiger99@gmail.com>"
-#define __MODULE_MAJOR_NUMBER 240
+#define __MOD_NAME "PROC_MODULE"
+#define __MOD_DESC "Example read/write proc module"
+#define __MOD_AUTH "Matthew Todd Geiger <matthewgeiger99@gmail.com>"
 
-// Set mod info
-MODULE_AUTHOR(__MODULE_AUTHOR);
-MODULE_LICENSE(__MODULE_LISCENSE);
-MODULE_DESCRIPTION(__MODULE_DESCRIPTION);
+MODULE_AUTHOR(__MOD_AUTH);
+MODULE_DESCRIPTION(__MOD_DESC);
 
-// Set some globals
-// Remember that a kernel stack is small!
-static int iMajorNumber = 0;
+MODULE_LICENSE("GPL");
 
 static uint8_t u8DeviceOpen = 0;
 
 static char szBuffer[80];
-static char *szPtr;
-
- /***************************************/
-// CREATE YOUR FILE OPERATION FUNCTIONS //
-/***************************************/
+static char *szPtr = NULL;
 
 //
-// FUNCTION RAN WHEN DEVICE FILE IS OPENED
+// Create open function
 int
-__mod_open(struct inode *inode, struct file *file)
+__proc_open(struct inode *inode, struct file *file)
 {
-	// Check if device file is already open
-	if(u8DeviceOpen) {
-		printk(KERN_ALERT "%s: Device file already opened!\n", __MODULE_NAME);
-		return -EBUSY;
-	}
+    // Check if PROC file is open
+    if(u8DeviceOpen) {
+        printk(KERN_ALERT "%s: PROC file is already open!\n", __MOD_NAME);
+        return -EBUSY;
+    }
 
-	// Label device open
-	u8DeviceOpen++;
+    u8DeviceOpen++;
 
-	// Create buffer for read operation
-	sprintf(szBuffer, "%s: [!] DEVICE FILE RESPONSE [!]\n", __MODULE_NAME);
-	szPtr = szBuffer;
+    // Lock module
+    try_module_get(THIS_MODULE);
 
-	// Lock module
-	try_module_get(THIS_MODULE);
-
-	printk(KERN_INFO "%s: Device file opened\n", __MODULE_NAME);
-	return 0;
+    printk(KERN_INFO "%s: PROC file opened\n", __MOD_NAME);
+    return 0;
 }
 
 //
-// FUNCTION TO CLOSE DEVICE FILE
+// Create close function
 int
-__mod_close(struct inode *inode, struct file *file)
+__proc_close(struct inode *inode, struct file *file)
 {
-	// Check if device file is already closed
-	if(u8DeviceOpen <= 0) {
-		printk(KERN_ALERT "%s: Device file already closed!\n", __MODULE_NAME);
-		return -EBUSY;
-	}
+    // Check if device is closed
+    if(u8DeviceOpen <= 0) {
+        printk(KERN_ALERT "%s: PROC file is already closed!\n", __MOD_NAME);
+        return -EBUSY;
+    }
 
-	// Label device closed
-	u8DeviceOpen--;
+    u8DeviceOpen--;
 
-	// Unlock module
-	module_put(THIS_MODULE);
+    // Unlock module
+    module_put(THIS_MODULE);
 
-	printk(KERN_INFO "%s: Device closed successfully\n", __MODULE_NAME);
-	return 0;
+    printk(KERN_INFO "%s: PROC file closed\n", __MOD_NAME);
+    return 0;
 }
 
 //
-// FUNCTION TO READ DEVICE FILE
+// Create read function
 ssize_t
-__mod_read(struct file* file, char *buffer, size_t length, loff_t *offset)
+__proc_read(struct file *file, char *buffer,
+            size_t length, loff_t *offset)
 {
-	int iBytesRead = 0;
+    // Keep track of bytes read
+    int iBytesRead = 0;
 
-	// Check for NULL string
-	if(*szPtr == 0)
-		return 0;
+    // Check buffer
+    if(szPtr == NULL || *szPtr == 0)
+        return 0;
 
-	// Send one byte at a time
-	while(length && *szPtr) {
-		// Send byte and increment
-		put_user(*(szPtr++), buffer++);
+    length = strlen(szBuffer);
 
-		// Subtract length and increment bytes read
-		length--;
-		iBytesRead++;
+    // Loop through string
+    while(length && *szPtr) {
+        // Write byte to STDOUT of user
+        put_user(*(szPtr++), buffer++);
+
+        length--;
+        iBytesRead++;
+    }
+
+    printk(KERN_INFO "%s: PROC file read\n", __MOD_NAME);
+    return iBytesRead;
+}
+
+//
+// Create write function
+ssize_t
+__proc_write(struct file *file, const char *buffer,
+            size_t length, loff_t *offset)
+{
+    // Check if ptr is NULL and reset buffer
+    memset(szBuffer, 0, sizeof(szBuffer));
+	if(szPtr != NULL) {
+        memset(szPtr, 0, sizeof(szPtr));
+    	kfree(szPtr);
+    	szPtr = NULL;
 	}
 
-	printk(KERN_INFO "%s: Device read successfully\n", __MODULE_NAME);
-	return iBytesRead;
+    // Check length
+    if(length > 80)
+        length = 80;
+
+    // Copy text string user
+    if(copy_from_user(szBuffer, buffer, length)) {
+        printk(KERN_ALERT "%s: Failed to get data from user!\n", __MOD_NAME);
+        return -1;
+    }
+
+    if(*szBuffer == 0)
+        return 0;
+
+    // Allocate new string on the heap
+    szPtr = kmalloc(strlen(szBuffer), GFP_KERNEL);
+    strncpy(szPtr, szBuffer, strlen(szBuffer) + 1);
+    szPtr[strlen(szBuffer)] = 0;
+
+    printk(KERN_INFO "%s: PROC file write\n", __MOD_NAME);
+    return length;
 }
 
-ssize_t
-__mod_write(struct file* file, const char *buffer, size_t length, loff_t *offset)
-{
-	printk(KERN_ALERT "%s: WRITE OPERATION IS NOT AVAILIABLE IN THIS MODULE\n", __MODULE_NAME);
-	return EINVAL;
-}
-
-// Define functions used in file operations
-const struct file_operations fopp = {
-	.owner = THIS_MODULE,
-	.open = __mod_open,
-	.release = __mod_close,
-	.read = __mod_read,
-	.write = __mod_write,
+// Define PROC entry and file operations
+static struct proc_dir_entry *proc;
+static struct file_operations fopp = {
+    .owner = THIS_MODULE,
+    .open = __proc_open,
+    .release = __proc_close,
+    .read = __proc_read,
+    .write = __proc_write,
 };
 
 //
-// MODULE INIT FUNCTION
+// Module init function
 static int
 __mod_init(void)
 {
-	// Register character device
-	iMajorNumber = register_chrdev(	__MODULE_MAJOR_NUMBER,	/* Major number you want to request */
-									__MODULE_NAME,			/* Set your module name */
-									&fopp);					/* Define the functions you want to use for file operations */
+    // Create PROC file
+    proc = proc_create(__MOD_NAME, 0660, NULL, &fopp);
+    if(proc == NULL) {
+        printk(KERN_ALERT "%s: Failed to create PROC file!\n", __MOD_NAME);
+        return -1;
+    }
 
-	// Always error check
-	if(iMajorNumber < 0) {
-		printk(KERN_ALERT "%s: Failed to initialize module\n", __MODULE_NAME);
-		return iMajorNumber;
-	}
-
-	printk(KERN_ALERT "%s: Module successfully initialized\n", __MODULE_NAME);
-	return 0;
+    printk(KERN_ALERT "%s: Created PROC file\n", __MOD_NAME);
+    return 0;
 }
 
 //
-// MODULE EXIT FUNCTION
+// Module exit function
 static void
 __mod_exit(void)
 {
-	// Unregister character device
-	unregister_chrdev(__MODULE_MAJOR_NUMBER, __MODULE_NAME);
-
-	printk(KERN_ALERT "%s: Module successfully unloaded\n", __MODULE_NAME);
+    // Remove PROC file
+    proc_remove(proc);
+    printk(KERN_ALERT "%s: Module unloaded\n", __MOD_NAME);
 }
 
-//
-// REGISTER INIT AND EXIT FUNCTIONS
+// Establish init and exit functions
 module_init(__mod_init);
 module_exit(__mod_exit);
